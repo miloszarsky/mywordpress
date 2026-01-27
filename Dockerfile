@@ -44,6 +44,10 @@ COPY apache-vhost.conf /etc/apache2/sites-available/000-default.conf
 # 6. Configure Apache
 RUN a2enmod rewrite proxy_fcgi setenvif remoteip
 
+# 6b. Harden Apache Security (Anonymize Banner)
+RUN sed -i 's/^ServerTokens .*/ServerTokens Prod/' /etc/apache2/conf-available/security.conf && \
+    sed -i 's/^ServerSignature .*/ServerSignature Off/' /etc/apache2/conf-available/security.conf
+
 # 7. Redirect Apache logs to Docker's stdout and stderr streams
 RUN ln -sf /dev/stdout /var/log/apache2/access.log && \
     ln -sf /dev/stderr /var/log/apache2/error.log
