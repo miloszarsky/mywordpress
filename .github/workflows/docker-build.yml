@@ -43,18 +43,41 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Scan image for vulnerabilities
+      # Blocking scan: fail the build on HIGH/CRITICAL CVEs that have a fix
+      # available upstream. These are actionable (just rebuild).
+      - name: Scan image - block on fixable HIGH/CRITICAL
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
           format: sarif
-          output: trivy-results.sarif
+          output: trivy-results-fixable.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
 
-      - name: Upload Trivy scan results to GitHub Security
-        if: always() && hashFiles('trivy-results.sarif') != ''
+      # Reporting-only scan: capture the full picture (MEDIUM+ including
+      # unfixed) and surface it in the Security tab without breaking the build.
+      - name: Scan image - report full picture
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+          format: sarif
+          output: trivy-results-full.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: false
+          exit-code: '0'
+
+      - name: Upload Trivy fixable findings to GitHub Security
+        if: always() && hashFiles('trivy-results-fixable.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: trivy-results-fixable.sarif
+          category: trivy-fixable
+
+      - name: Upload Trivy full findings to GitHub Security
+        if: always() && hashFiles('trivy-results-full.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results-full.sarif
+          category: trivy-full
