@@ -23,8 +23,10 @@ jobs:
           # existing trivy-fixable/trivy-full SARIF categories).
           - dockerfile: Dockerfile
             suffix: ""
+            tool-name: Trivy (Debian)
           - dockerfile: Dockerfile.alpine
             suffix: -alpine
+            tool-name: Trivy (Alpine)
     name: build-scan-push (${{ matrix.dockerfile }})
     permissions:
       contents: read
@@ -98,6 +100,20 @@ jobs:
           severity: CRITICAL,HIGH,MEDIUM
           ignore-unfixed: false
           exit-code: '0'
+
+      # The Security tab's alert list only filters by tool name (categories
+      # are not filterable there), so rename the SARIF tool per variant to
+      # keep the two builds' alerts fully separated.
+      - name: Rename SARIF tool per variant
+        if: always()
+        run: |
+          set -eux
+          for f in trivy-results-fixable.sarif trivy-results-full.sarif; do
+            [ -f "$f" ] || continue
+            jq --arg name "${{ matrix.tool-name }}" \
+              '.runs[].tool.driver.name = $name' "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+          done
 
       - name: Upload Trivy fixable findings to GitHub Security
         if: always() && hashFiles('trivy-results-fixable.sarif') != ''
