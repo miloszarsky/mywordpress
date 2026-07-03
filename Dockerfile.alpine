@@ -1,0 +1,93 @@
+# Alpine variant of ./Dockerfile: same Apache + PHP-FPM 8.5 stack, sharing
+# custom-php.ini and apache-vhost.conf with the Debian image.
+FROM alpine:3.23
+
+# php85 lives in Alpine's community repo (no third-party repo like Sury
+# needed) and OPcache+JIT is compiled into the base php85 package, so a
+# single --no-cache install replaces the Debian install-and-purge dance.
+# Alpine splits extensions per-package; this list mirrors what Debian's
+# php8.5-{fpm,mysql,xml,...} packages pull in.
+RUN apk add --no-cache \
+        apache2 \
+        apache2-proxy \
+        ca-certificates \
+        tini \
+        php85-fpm \
+        php85-bcmath \
+        php85-ctype \
+        php85-curl \
+        php85-dom \
+        php85-exif \
+        php85-fileinfo \
+        php85-gd \
+        php85-iconv \
+        php85-intl \
+        php85-mbstring \
+        php85-mysqli \
+        php85-openssl \
+        php85-pdo_mysql \
+        php85-phar \
+        php85-session \
+        php85-simplexml \
+        php85-soap \
+        php85-sodium \
+        php85-tokenizer \
+        php85-xml \
+        php85-xmlreader \
+        php85-xmlwriter \
+        php85-zip
+
+# Custom configuration files (shared with the Debian image). Apache includes
+# conf.d/*.conf alphabetically, so the vhost is named zz-* to load after
+# proxy.conf (which provides mod_proxy_fcgi).
+COPY custom-php.ini /etc/php85/conf.d/99-custom.ini
+COPY apache-vhost.conf /etc/apache2/conf.d/zz-wordpress.conf
+
+# Apache modules: Alpine has no a2enmod; headers/setenvif are loaded already
+# and apache2-proxy brings proxy_fcgi, so only rewrite and remoteip need
+# uncommenting. Switch prefork -> event to match Debian's default MPM (PHP
+# runs in FPM, so there is no mod_php constraint).
+RUN sed -i \
+        -e 's|^#LoadModule rewrite_module|LoadModule rewrite_module|' \
+        -e 's|^#LoadModule remoteip_module|LoadModule remoteip_module|' \
+        -e 's|^LoadModule mpm_prefork_module|#LoadModule mpm_prefork_module|' \
+        -e 's|^#LoadModule mpm_event_module|LoadModule mpm_event_module|' \
+        /etc/apache2/httpd.conf
+
+# The shared vhost uses Debian's ${APACHE_LOG_DIR}; define it in a conf.d
+# file that sorts before the vhost. Alpine's DirectoryIndex also lacks
+# index.php (Debian includes it by default).
+RUN { \
+        echo 'Define APACHE_LOG_DIR /var/log/apache2'; \
+        echo 'DirectoryIndex index.php index.html'; \
+    } > /etc/apache2/conf.d/00-docker.conf
+
+# Harden Apache banner.
+RUN sed -i 's/^ServerTokens .*/ServerTokens Prod/' /etc/apache2/httpd.conf && \
+    sed -i 's/^ServerSignature .*/ServerSignature Off/' /etc/apache2/httpd.conf
+
+# PHP-FPM: listen on the unix socket the shared vhost expects and run as the
+# same user as Apache (Alpine defaults to nobody on TCP 9000).
+RUN mkdir -p /run/php && \
+    { \
+        echo '[www]'; \
+        echo 'listen = /run/php/php8.5-fpm.sock'; \
+        echo 'listen.owner = apache'; \
+        echo 'listen.group = apache'; \
+        echo 'user = apache'; \
+        echo 'group = apache'; \
+    } > /etc/php85/php-fpm.d/zz-docker.conf
+
+# Send logs to Docker's stdout/stderr.
+RUN ln -sf /dev/stdout /var/log/apache2/access.log && \
+    ln -sf /dev/stderr /var/log/apache2/error.log
+
+WORKDIR /var/www/html
+
+EXPOSE 80
+
+# tini reaps zombies and (-g) forwards SIGTERM to the whole process group,
+# so both Apache and PHP-FPM shut down cleanly on `docker stop`.
+ENTRYPOINT ["/sbin/tini", "-g", "--"]
+# /run/php is recreated at start in case /run is mounted as tmpfs.
+CMD ["sh", "-c", "mkdir -p /run/php && php-fpm85 --nodaemonize & httpd -D FOREGROUND"]

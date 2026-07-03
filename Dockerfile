@@ -31,7 +31,6 @@ RUN set -eux; \
         php8.5-zip \
         php8.5-intl \
         php8.5-soap \
-        php8.5-imagick \
         php8.5-bcmath; \
     apt-mark auto curl gnupg lsb-release > /dev/null; \
     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false; \

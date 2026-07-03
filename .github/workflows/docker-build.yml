@@ -7,6 +7,7 @@ on:
     branches: [master]
     paths:
       - Dockerfile
+      - Dockerfile.alpine
       - custom-php.ini
       - apache-vhost.conf
       - .github/workflows/docker-build.yml
@@ -14,6 +15,17 @@ on:
 jobs:
   build-scan-push:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Debian keeps the unsuffixed tags (and empty suffix preserves the
+          # existing trivy-fixable/trivy-full SARIF categories).
+          - dockerfile: Dockerfile
+            suffix: ""
+          - dockerfile: Dockerfile.alpine
+            suffix: -alpine
+    name: build-scan-push (${{ matrix.dockerfile }})
     permissions:
       contents: read
       packages: write
@@ -40,6 +52,10 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
+          # Suffixes every tag for the alpine variant (1.2.3-alpine,
+          # latest-alpine, ...); no-op for the Debian build.
+          flavor: |
+            suffix=${{ matrix.suffix }},onlatest=true
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -51,11 +67,12 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           load: true
           push: false
           tags: image-to-scan:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.dockerfile }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.dockerfile }}
 
       # Blocking scan: fail the build on HIGH/CRITICAL CVEs that have a fix
       # available upstream. These are actionable (just rebuild).
@@ -87,14 +104,14 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results-fixable.sarif
-          category: trivy-fixable
+          category: trivy-fixable${{ matrix.suffix }}
 
       - name: Upload Trivy full findings to GitHub Security
         if: always() && hashFiles('trivy-results-full.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results-full.sarif
-          category: trivy-full
+          category: trivy-full${{ matrix.suffix }}
 
       # Only release events push to GHCR. Master pushes scan-only.
       - name: Tag and push to GHCR
