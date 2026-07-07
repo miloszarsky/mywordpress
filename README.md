@@ -8,8 +8,8 @@ two variants that share the same configuration (`custom-php.ini`,
 
 | Variant | Base image | Dockerfile | Tags | Size |
 |---|---|---|---|---|
-| Debian (default) | `debian:trixie-slim` | `Dockerfile` | `latest`, `2`, `2.1`, `2.1.0`, ... | ~388 MB |
-| Alpine | `alpine:3.23` | `Dockerfile.alpine` | `latest-alpine`, `2-alpine`, `2.1-alpine`, `2.1.0-alpine`, ... | ~131 MB |
+| Debian (default) | `debian:trixie-slim` | `Dockerfile` | `latest`, `2`, `2.1`, `2.1.0`, ... | ~430 MB |
+| Alpine | `alpine:3.23` | `Dockerfile.alpine` | `latest-alpine`, `2-alpine`, `2.1-alpine`, `2.1.0-alpine`, ... | ~143 MB |
 
 ```sh
 docker pull ghcr.io/miloszarsky/mywordpress:latest         # Debian
@@ -44,6 +44,46 @@ at `/var/www/html` (bind mount or `COPY` in a derived image):
 docker run -d -p 80:80 -v /path/to/wordpress:/var/www/html \
   ghcr.io/miloszarsky/mywordpress:latest-alpine
 ```
+
+## OpenTelemetry tracing
+
+Both variants ship distributed tracing for WordPress with zero changes to the
+mounted site: the `opentelemetry` PHP extension (plus `protobuf` for fast OTLP
+serialization) is installed from distro packages, and the [OTel PHP SDK with
+WordPress auto-instrumentation](https://github.com/open-telemetry/opentelemetry-php-contrib)
+is baked into the image at `/opt/otel-php`, loaded via `auto_prepend_file`.
+
+Tracing is **off by default** (the prepend only registers a Composer
+autoloader; the SDK stays no-op). Activate it with standard OTel env vars:
+
+```sh
+docker run -d -p 80:80 -v /path/to/wordpress:/var/www/html \
+  -e OTEL_PHP_AUTOLOAD_ENABLED=true \
+  -e OTEL_EXPORTER_OTLP_ENDPOINT=http://your-collector:4318 \
+  -e OTEL_SERVICE_NAME=my-site \
+  ghcr.io/miloszarsky/mywordpress:latest
+```
+
+| Variable | Image default | Meaning |
+|---|---|---|
+| `OTEL_PHP_AUTOLOAD_ENABLED` | `false` | Master switch — set `true` to trace. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | Your collector's OTLP endpoint (`http://host:4318` for HTTP). |
+| `OTEL_SERVICE_NAME` | `wordpress` | `service.name` resource attribute. |
+| `OTEL_TRACES_EXPORTER` | `otlp` | Traces only; metrics and logs exporters default to `none`. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Export protocol. |
+
+All other [SDK env vars](https://opentelemetry.io/docs/languages/sdk-configuration/)
+work as usual (sampling, headers, resource attributes, ...) — PHP-FPM pools
+are configured with `clear_env = no` in both variants so container env vars
+reach the SDK.
+
+Notes:
+
+- The bundled SDK registers its autoloader for every request. If a plugin
+  bundles conflicting versions of shared libraries (e.g. Guzzle), the
+  image's copies win for their namespaces.
+- The SDK bundle is built in a `composer:2` stage that is kept **identical**
+  in both Dockerfiles — edit them together.
 
 ## CI / security scanning
 

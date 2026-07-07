@@ -1,3 +1,22 @@
+# OpenTelemetry PHP SDK + WordPress auto-instrumentation, built once here and
+# copied into the final image (vendor/ is pure PHP, so building with the
+# composer image's PHP version is fine). --ignore-platform-req because the
+# builder lacks the opentelemetry C extension the final image installs.
+# Keep this stage identical in ./Dockerfile.
+FROM composer:2 AS otel-sdk
+WORKDIR /otel
+RUN set -eux; \
+    composer init --no-interaction --name miloszarsky/otel-sdk --stability beta; \
+    composer config prefer-stable true; \
+    composer config allow-plugins.php-http/discovery false; \
+    composer require --no-interaction --no-progress \
+        --ignore-platform-req=ext-opentelemetry \
+        open-telemetry/sdk \
+        open-telemetry/exporter-otlp \
+        open-telemetry/opentelemetry-auto-wordpress \
+        guzzlehttp/guzzle; \
+    composer dump-autoload --optimize --classmap-authoritative
+
 # Alpine variant of ./Dockerfile: same Apache + PHP-FPM 8.5 stack, sharing
 # custom-php.ini and apache-vhost.conf with the Debian image.
 FROM alpine:3.23
@@ -26,6 +45,8 @@ RUN apk add --no-cache \
         php85-mysqli \
         php85-openssl \
         php85-pdo_mysql \
+        php85-pecl-opentelemetry \
+        php85-pecl-protobuf \
         php85-phar \
         php85-session \
         php85-simplexml \
@@ -42,6 +63,9 @@ RUN apk add --no-cache \
 # proxy.conf (which provides mod_proxy_fcgi).
 COPY custom-php.ini /etc/php85/conf.d/99-custom.ini
 COPY apache-vhost.conf /etc/apache2/conf.d/zz-wordpress.conf
+
+# OpenTelemetry SDK bundle (loaded via auto_prepend_file in custom-php.ini).
+COPY --from=otel-sdk /otel /opt/otel-php
 
 # Apache modules: Alpine has no a2enmod; headers/setenvif are loaded already
 # and apache2-proxy brings proxy_fcgi, so only rewrite and remoteip need
@@ -67,7 +91,8 @@ RUN sed -i 's/^ServerTokens .*/ServerTokens Prod/' /etc/apache2/httpd.conf && \
     sed -i 's/^ServerSignature .*/ServerSignature Off/' /etc/apache2/httpd.conf
 
 # PHP-FPM: listen on the unix socket the shared vhost expects and run as the
-# same user as Apache (Alpine defaults to nobody on TCP 9000).
+# same user as Apache (Alpine defaults to nobody on TCP 9000). clear_env=no
+# lets OTEL_* container env vars through to the SDK.
 RUN mkdir -p /run/php && \
     { \
         echo '[www]'; \
@@ -76,7 +101,17 @@ RUN mkdir -p /run/php && \
         echo 'listen.group = apache'; \
         echo 'user = apache'; \
         echo 'group = apache'; \
+        echo 'clear_env = no'; \
     } > /etc/php85/php-fpm.d/zz-docker.conf
+
+# Tracing is opt-in: set OTEL_PHP_AUTOLOAD_ENABLED=true and
+# OTEL_EXPORTER_OTLP_ENDPOINT to activate (see README).
+ENV OTEL_PHP_AUTOLOAD_ENABLED=false \
+    OTEL_SERVICE_NAME=wordpress \
+    OTEL_TRACES_EXPORTER=otlp \
+    OTEL_METRICS_EXPORTER=none \
+    OTEL_LOGS_EXPORTER=none \
+    OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 
 # Send logs to Docker's stdout/stderr.
 RUN ln -sf /dev/stdout /var/log/apache2/access.log && \

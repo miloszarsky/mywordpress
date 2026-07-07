@@ -1,3 +1,22 @@
+# OpenTelemetry PHP SDK + WordPress auto-instrumentation, built once here and
+# copied into the final image (vendor/ is pure PHP, so building with the
+# composer image's PHP version is fine). --ignore-platform-req because the
+# builder lacks the opentelemetry C extension the final image installs.
+# Keep this stage identical in Dockerfile.alpine.
+FROM composer:2 AS otel-sdk
+WORKDIR /otel
+RUN set -eux; \
+    composer init --no-interaction --name miloszarsky/otel-sdk --stability beta; \
+    composer config prefer-stable true; \
+    composer config allow-plugins.php-http/discovery false; \
+    composer require --no-interaction --no-progress \
+        --ignore-platform-req=ext-opentelemetry \
+        open-telemetry/sdk \
+        open-telemetry/exporter-otlp \
+        open-telemetry/opentelemetry-auto-wordpress \
+        guzzlehttp/guzzle; \
+    composer dump-autoload --optimize --classmap-authoritative
+
 # Use the latest stable Debian as the base image
 FROM debian:trixie-slim
 
@@ -31,7 +50,9 @@ RUN set -eux; \
         php8.5-zip \
         php8.5-intl \
         php8.5-soap \
-        php8.5-bcmath; \
+        php8.5-bcmath \
+        php8.5-opentelemetry \
+        php8.5-protobuf; \
     apt-mark auto curl gnupg lsb-release > /dev/null; \
     apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false; \
     apt-mark manual $savedAptMark > /dev/null; \
@@ -41,6 +62,25 @@ RUN set -eux; \
 # Custom configuration files
 COPY custom-php.ini /etc/php/8.5/fpm/conf.d/99-custom.ini
 COPY apache-vhost.conf /etc/apache2/sites-available/000-default.conf
+
+# OpenTelemetry SDK bundle (loaded via auto_prepend_file in custom-php.ini).
+COPY --from=otel-sdk /otel /opt/otel-php
+
+# FPM clears container env vars by default; the OTel SDK is configured
+# entirely through OTEL_* env vars, so let them through.
+RUN { \
+        echo '[www]'; \
+        echo 'clear_env = no'; \
+    } > /etc/php/8.5/fpm/pool.d/zz-docker.conf
+
+# Tracing is opt-in: set OTEL_PHP_AUTOLOAD_ENABLED=true and
+# OTEL_EXPORTER_OTLP_ENDPOINT to activate (see README).
+ENV OTEL_PHP_AUTOLOAD_ENABLED=false \
+    OTEL_SERVICE_NAME=wordpress \
+    OTEL_TRACES_EXPORTER=otlp \
+    OTEL_METRICS_EXPORTER=none \
+    OTEL_LOGS_EXPORTER=none \
+    OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 
 # Apache modules (headers added for the security-header directives in the vhost).
 RUN a2enmod rewrite proxy_fcgi setenvif remoteip headers
