@@ -85,6 +85,13 @@ Notes:
 - The SDK bundle is built in a `composer:2` stage that is kept **identical**
   in both Dockerfiles — edit them together.
 
+## Continuous profiling (Grafana Pyroscope)
+
+CPU flame graphs of the running containers without touching the images:
+[`examples/pyroscope-ebpf/`](examples/pyroscope-ebpf/) runs Grafana Alloy as
+an eBPF agent on the Docker host and pushes profiles to a self-hosted
+Pyroscope. See that directory's README for setup and current limitations.
+
 ## CI / security scanning
 
 Every push to `master` and every release builds **both** variants and scans

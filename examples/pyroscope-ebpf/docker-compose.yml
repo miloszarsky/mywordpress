@@ -1,0 +1,29 @@
+# Grafana Alloy as an eBPF profiling agent for the WordPress containers on
+# this host. Point PYROSCOPE_URL at your Pyroscope server, then add it as a
+# datasource in Grafana to see the flame graphs.
+services:
+  alloy:
+    # Pinned: v1.11.0+ ships a regression where every eBPF sample is dropped
+    # with an empty container ID (count=0 in the logs, no data in Pyroscope).
+    # See https://github.com/grafana/alloy/issues/4921 before bumping.
+    image: grafana/alloy:v1.10.2
+    # eBPF needs host PID namespace + elevated privileges (alternatively,
+    # replace privileged with cap_add: BPF, PERFMON, SYS_PTRACE,
+    # CHECKPOINT_RESTORE, SYS_RESOURCE, DAC_READ_SEARCH, SYSLOG).
+    pid: host
+    privileged: true
+    restart: unless-stopped
+    command: ["run", "/etc/alloy/config.alloy", "--server.http.listen-addr=0.0.0.0:12345"]
+    environment:
+      PYROSCOPE_URL: ${PYROSCOPE_URL:-http://pyroscope:4040}
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys/kernel/tracing:/sys/kernel/tracing:ro
+
+  # For local testing only — in production point PYROSCOPE_URL at your
+  # existing Pyroscope and delete this service.
+  pyroscope:
+    image: grafana/pyroscope:latest
+    ports:
+      - "4040:4040"

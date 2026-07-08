@@ -1,0 +1,44 @@
+// Grafana Alloy: continuous PHP profiling of the WordPress containers via
+// eBPF, pushed to a self-hosted Pyroscope. Runs on the Docker host — the
+// WordPress images need no changes for this.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "wordpress" {
+  targets = discovery.docker.containers.targets
+
+  // Profile only WordPress containers; adjust the regex to your container
+  // naming (docker names arrive with a leading slash).
+  rule {
+    action        = "keep"
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(wordpress|wp)[-_.].*"
+  }
+
+  // Container name (minus the leading slash) becomes service_name in
+  // Pyroscope's application selector.
+  rule {
+    action        = "replace"
+    source_labels = ["__meta_docker_container_name"]
+    target_label  = "service_name"
+    regex         = "/(.*)"
+    replacement   = "$1"
+  }
+}
+
+pyroscope.ebpf "wordpress" {
+  forward_to = [pyroscope.write.default.receiver]
+  targets    = discovery.relabel.wordpress.output
+
+  // Sampling frequency per CPU (Hz). 19 is the upstream default and keeps
+  // overhead well under 1%; raise for finer flame graphs.
+  sample_rate = 19
+}
+
+pyroscope.write "default" {
+  endpoint {
+    url = sys.env("PYROSCOPE_URL")
+  }
+}
