@@ -25,8 +25,11 @@ FROM alpine:3.23
 # needed) and OPcache+JIT is compiled into the base php85 package, so a
 # single --no-cache install replaces the Debian install-and-purge dance.
 # Alpine splits extensions per-package; this list mirrors what Debian's
-# php8.5-{fpm,mysql,xml,...} packages pull in.
-RUN apk add --no-cache \
+# php8.5-{fpm,mysql,xml,...} packages pull in. `apk upgrade` first picks up
+# security fixes for packages already in the base image (apk add never
+# upgrades those), so a stale alpine:3.23 tag can't fail the Trivy gate.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache \
         apache2 \
         apache2-proxy \
         ca-certificates \
