@@ -26,6 +26,9 @@ Differences between the variants are packaging-only:
   background of unfixed low-impact CVEs (reported, not blocking).
 - **libc** — Alpine uses musl instead of glibc. Irrelevant for stock
   WordPress/PHP, worth knowing if you add binary extensions.
+- **imagick** — Debian only. WordPress uses it for image editing when present
+  and falls back to GD otherwise; it is left out of Alpine to keep that image
+  small and its CVE surface minimal.
 
 Everything else is kept in lockstep: same Apache event MPM fronting PHP-FPM
 over a unix socket, same PHP extension set (mysqli, gd, curl, mbstring, xml,

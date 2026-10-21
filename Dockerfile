@@ -50,6 +50,7 @@ RUN set -eux; \
         php8.5-zip \
         php8.5-intl \
         php8.5-soap \
+        php8.5-imagick \
         php8.5-bcmath \
         php8.5-opentelemetry \
         php8.5-protobuf; \
