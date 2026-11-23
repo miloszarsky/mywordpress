@@ -62,6 +62,11 @@ jobs:
                    | unique[] | @tsv' "$1"
           }
 
+          # Machine-readable result as a job annotation (read by the GitHub
+          # exporter on server02 for Grafana): "<stage>/<image>=<count> ...".
+          result=""
+          report() { echo "::notice title=vuln-rescan-result::${result# }"; }
+
           variants="Dockerfile: Dockerfile.alpine:-alpine"
           published_total=0
           summary=""
@@ -73,6 +78,7 @@ jobs:
             findings "published$suffix.json" > "published$suffix.tsv"
             n=$(wc -l < "published$suffix.tsv")
             published_total=$((published_total + n))
+            result+=" published/latest$suffix=$n"
             summary+="| \`latest$suffix\` | $n |"$'\n'
           done
 
@@ -86,6 +92,7 @@ jobs:
           if [ "$published_total" -eq 0 ]; then
             echo "Published images are clean, nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
             echo "release=false" >> "$GITHUB_OUTPUT"
+            report
             exit 0
           fi
 
@@ -100,6 +107,7 @@ jobs:
             findings "fresh$suffix.json" > "fresh$suffix.tsv"
             n=$(wc -l < "fresh$suffix.tsv")
             fresh_total=$((fresh_total + n))
+            result+=" fresh/latest$suffix=$n"
             summary+="| \`$dockerfile\` | $n |"$'\n'
           done
 
@@ -118,6 +126,7 @@ jobs:
               for v in $variants; do cat "fresh${v#*:}.tsv"; done | sort -u | column -t -s $'\t'
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            report
             echo "::error::Fresh build still has $fresh_total fixable HIGH/CRITICAL findings; not releasing."
             exit 1
           fi
@@ -142,6 +151,7 @@ jobs:
           cat notes.md >> "$GITHUB_STEP_SUMMARY"
 
           echo "release=true" >> "$GITHUB_OUTPUT"
+          report
           {
             echo "notes<<NOTES_EOF"
             cat notes.md
