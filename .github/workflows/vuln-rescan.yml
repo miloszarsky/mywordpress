@@ -1,0 +1,188 @@
+name: Scheduled vulnerability rescan
+
+# Daily: scan the published :latest / :latest-alpine images with Trivy. If
+# they carry fixable HIGH/CRITICAL CVEs, verify that a fresh no-cache build of
+# master gets rid of all of them, then cut a patch release (vX.Y.Z+1) and
+# build/push it via docker-build.yml.
+#
+# A release is cut only when the fresh build is fully clean, which is exactly
+# what docker-build.yml's blocking Trivy gate requires. If a rebuild alone
+# isn't enough (e.g. the fix needs a version bump in a Dockerfile), this
+# workflow fails instead, so nothing gets released and you get notified.
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Scan and report only, don't cut a release
+        type: boolean
+        default: false
+
+concurrency:
+  group: vuln-rescan
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      notes: ${{ steps.decide.outputs.notes }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: v0.76.2
+          cache: true
+
+      - name: Scan published images and fresh builds
+        id: decide
+        run: |
+          set -euo pipefail
+
+          # Same filter as the blocking gate in docker-build.yml.
+          scan() {
+            trivy image --quiet --severity CRITICAL,HIGH --ignore-unfixed \
+              --format json --output "$2" "$1"
+          }
+          # Unique (CVE, package) pairs as TSV: id, pkg, installed, fixed, severity.
+          findings() {
+            jq -r '[.Results[]?.Vulnerabilities[]?
+                     | [.VulnerabilityID, .PkgName, .InstalledVersion, .FixedVersion, .Severity]]
+                   | unique[] | @tsv' "$1"
+          }
+
+          variants="Dockerfile: Dockerfile.alpine:-alpine"
+          published_total=0
+          summary=""
+          for v in $variants; do
+            suffix="${v#*:}"
+            ref="$IMAGE:latest$suffix"
+            docker pull --quiet "$ref" >/dev/null
+            scan "$ref" "published$suffix.json"
+            findings "published$suffix.json" > "published$suffix.tsv"
+            n=$(wc -l < "published$suffix.tsv")
+            published_total=$((published_total + n))
+            summary+="| \`latest$suffix\` | $n |"$'\n'
+          done
+
+          {
+            echo "## Published images"
+            echo "| image | fixable HIGH/CRITICAL |"
+            echo "|---|---|"
+            printf '%s' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$published_total" -eq 0 ]; then
+            echo "Published images are clean, nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Fresh build of master for every variant (a release rebuilds both).
+          fresh_total=0
+          summary=""
+          for v in $variants; do
+            dockerfile="${v%%:*}"
+            suffix="${v#*:}"
+            docker build --quiet --pull --no-cache -f "$dockerfile" -t "fresh$suffix" . >/dev/null
+            scan "fresh$suffix" "fresh$suffix.json"
+            findings "fresh$suffix.json" > "fresh$suffix.tsv"
+            n=$(wc -l < "fresh$suffix.tsv")
+            fresh_total=$((fresh_total + n))
+            summary+="| \`$dockerfile\` | $n |"$'\n'
+          done
+
+          {
+            echo "## Fresh no-cache build of master"
+            echo "| dockerfile | fixable HIGH/CRITICAL |"
+            echo "|---|---|"
+            printf '%s' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$fresh_total" -ne 0 ]; then
+            {
+              echo
+              echo "**A rebuild alone doesn't fix these, manual change needed:**"
+              echo '```'
+              for v in $variants; do cat "fresh${v#*:}.tsv"; done | sort -u | column -t -s $'\t'
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Fresh build still has $fresh_total fixable HIGH/CRITICAL findings; not releasing."
+            exit 1
+          fi
+
+          # Release notes: what the rebuild fixes, grouped per variant.
+          {
+            echo "Automated security rebuild: picks up upstream package fixes for these fixable HIGH/CRITICAL vulnerabilities in the previous release."
+            for v in $variants; do
+              suffix="${v#*:}"
+              [ -s "published$suffix.tsv" ] || continue
+              echo
+              echo "### \`latest$suffix\`"
+              echo "| CVE | severity | packages (installed → fixed) |"
+              echo "|---|---|---|"
+              # One row per CVE; input is sorted, so rows stay in CVE order.
+              awk -F'\t' '
+                $1 != id { if (id) print row " |"; id = $1; row = "| " $1 " | " $5 " | "; sep = "" }
+                { row = row sep $2 " " $3 " → " $4; sep = "<br>" }
+                END { if (id) print row " |" }' "published$suffix.tsv"
+            done
+          } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "notes<<NOTES_EOF"
+            cat notes.md
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: scan
+    if: needs.scan.outputs.release == 'true' && !inputs.dry-run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Create patch release
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NOTES: ${{ needs.scan.outputs.notes }}
+        run: |
+          set -euo pipefail
+          latest=$(gh release view --json tagName -q .tagName)
+          if [[ ! "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Latest release tag '$latest' isn't vX.Y.Z"
+            exit 1
+          fi
+          tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+          printf '%s\n' "$NOTES" > notes.md
+          # Target the exact commit the scan job built and verified.
+          gh release create "$tag" --target "$GITHUB_SHA" \
+            --title "$tag - Security rebuild" --notes-file notes.md
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}

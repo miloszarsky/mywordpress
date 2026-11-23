@@ -24,9 +24,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install runtime packages, configure Sury, install PHP, then purge transient
 # build-only packages (curl/gnupg/lsb-release) in the same layer so they
-# don't ship in the final image.
+# don't ship in the final image. `apt-get upgrade` first so a stale
+# debian:trixie-slim tag can't ship packages that already have security
+# fixes (mirrors `apk upgrade` in Dockerfile.alpine; the scheduled rescan
+# relies on rebuilds picking them up).
 RUN set -eux; \
     apt-get update; \
+    apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
         apache2 \
         ca-certificates \
