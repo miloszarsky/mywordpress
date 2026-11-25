@@ -84,6 +84,7 @@ jobs:
 
       # Build into the local daemon so Trivy can scan before we push to GHCR.
       - name: Build image (load locally for scanning)
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -112,8 +113,10 @@ jobs:
 
       # Reporting-only scan: capture the full picture (MEDIUM+ including
       # unfixed) and surface it in the Security tab without breaking the build.
+      # Runs even when the blocking scan fails, but only if the image was
+      # actually built - otherwise it just adds a misleading second error.
       - name: Scan image - report full picture
-        if: always()
+        if: always() && steps.build.outcome == 'success'
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: image-to-scan:latest
